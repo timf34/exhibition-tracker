@@ -149,8 +149,8 @@ async def main():
     # List of museum exhibition URLs to scrape
     museum_urls = [
         "https://www.nationalgallery.ie/art-and-artists/exhibitions",
-        "https://www.guggenheim.org/exhibitions",
-        "https://www.metmuseum.org/exhibitions",
+        # "https://www.guggenheim.org/exhibitions",
+        # "https://www.metmuseum.org/exhibitions",
         # Add more museum URLs here
     ]
     
