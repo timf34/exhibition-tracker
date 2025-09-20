@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass, asdict
 from typing import List, Optional
 from datetime import datetime
-from browser_use import Agent, ChatOpenAI, Tools
+from browser_use import Agent, ChatOpenAI, Tools, Browser
 from browser_use.agent.views import ActionResult
 from dotenv import load_dotenv
 
@@ -103,6 +103,11 @@ class ExhibitionScraper:
                     llm=self.llm,
                     tools=self.tools,
 					headless=True,
+					browser=Browser(
+						headless=True,
+						enable_default_extensions=False,
+					),
+					use_vision=False,
                 )
                 
                 await agent.run(max_steps=15)
