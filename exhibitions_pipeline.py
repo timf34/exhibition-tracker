@@ -79,17 +79,32 @@ class PageCondenser:
         await self.client.aclose()
 
     async def fetch_html(self, url: str, use_cache=True) -> Tuple[str, bool, float]:
+        print(f"[FETCH] Starting fetch for: {url}")
         start = time.perf_counter()
         key = self.cache_dir / (sha1(url) + ".html")
         if use_cache and key.exists():
+            print(f"[FETCH] Cache hit - loading from: {key.name}")
             html = key.read_text(encoding="utf-8", errors="ignore")
-            return html, True, (time.perf_counter() - start) * 1000
-        r = await self.client.get(url)
-        r.raise_for_status()
-        html = r.text
-        if use_cache:
-            key.write_text(html, encoding="utf-8")
-        return html, False, (time.perf_counter() - start) * 1000
+            elapsed = (time.perf_counter() - start) * 1000
+            print(f"[FETCH] Cache load completed in {elapsed:.1f}ms ({len(html)} chars)")
+            return html, True, elapsed
+        
+        print(f"[FETCH] Cache miss - making HTTP request")
+        try:
+            r = await self.client.get(url)
+            r.raise_for_status()
+            html = r.text
+            print(f"[FETCH] HTTP request successful ({r.status_code}) - {len(html)} chars")
+            if use_cache:
+                key.write_text(html, encoding="utf-8")
+                print(f"[FETCH] Cached to: {key.name}")
+        except Exception as e:
+            print(f"[FETCH] ERROR: Failed to fetch {url}: {e}")
+            raise
+        
+        elapsed = (time.perf_counter() - start) * 1000
+        print(f"[FETCH] Fetch completed in {elapsed:.1f}ms")
+        return html, False, elapsed
 
     @staticmethod
     def _choose_main(root: HTMLParser) -> HTMLParser:
@@ -142,39 +157,81 @@ class PageCondenser:
 
     def _anchors_from(self, node, base_url, max_items=1000) -> List[Dict[str, Any]]:
         seen, out = set(), []
+        total_links = len(node.css("a"))
+        skipped_counts = {"no_href_text": 0, "external": 0, "duplicate": 0}
+        
         for a in node.css("a"):
             href = (a.attributes.get("href") or "").strip()
             text = norm_space(a.text())[:180]
-            if not href or not text: continue
+            if not href or not text: 
+                skipped_counts["no_href_text"] += 1
+                continue
+                
             href = urljoin(base_url, href)
             if not self._same_domain(href, base_url) and "exhibition" not in text.lower():
+                skipped_counts["external"] += 1
                 continue
+                
             key = (href, text.lower())
-            if key in seen: continue
+            if key in seen: 
+                skipped_counts["duplicate"] += 1
+                continue
+                
             seen.add(key)
             rec = {"text": text, "href": href, "context": self._nearest_context(a)}
             kind, pager = self._classify_anchor(rec)
             rec["kind"], rec["pager"] = kind, pager
             out.append(rec)
             if len(out) >= max_items: break
+        
+        if any(skipped_counts.values()):
+            print(f"[CONDENSE] Link filtering: {total_links} total → {len(out)} kept (skipped: {skipped_counts['no_href_text']} no href/text, {skipped_counts['external']} external, {skipped_counts['duplicate']} duplicate)")
+        
         return out
 
     def condense_html(self, html: str, base_url: str, limit_text_chars=16000) -> Dict[str, Any]:
+        print(f"[CONDENSE] Starting HTML condensation ({len(html)} chars input)")
+        t_start = time.perf_counter()
+        
         doc = HTMLParser(html)
         body = doc.body or doc
         main = self._choose_main(body)
+        print(f"[CONDENSE] Selected main content area: {main.tag if hasattr(main, 'tag') else 'root'}")
+        
+        # Clean up unwanted elements
+        removed_count = 0
         for sel in ("script", "style", "noscript", "template", "svg", "iframe"):
-            for n in main.css(sel):
+            elements = main.css(sel)
+            removed_count += len(elements)
+            for n in elements:
                 n.decompose()
+        print(f"[CONDENSE] Removed {removed_count} unwanted elements")
+        
+        t_anchors_start = time.perf_counter()
         anchors = self._anchors_from(main, base_url)
+        t_anchors = (time.perf_counter() - t_anchors_start) * 1000
+        print(f"[CONDENSE] Extracted {len(anchors)} anchors in {t_anchors:.1f}ms")
+        
+        t_text_start = time.perf_counter()
         text = self._take_text(main, limit_chars=limit_text_chars)
+        t_text = (time.perf_counter() - t_text_start) * 1000
+        print(f"[CONDENSE] Extracted text ({len(text)} chars) in {t_text:.1f}ms")
+        
+        total_time = (time.perf_counter() - t_start) * 1000
+        print(f"[CONDENSE] Condensation completed in {total_time:.1f}ms")
+        
         return {"text": text, "anchors": anchors, "html_chars": len(html), "text_chars": len(text)}
 
     async def condense_url(self, url: str, use_cache=True, limit_text_chars=16000) -> Dict[str, Any]:
+        print(f"[CONDENSE_URL] Processing URL: {url}")
+        overall_start = time.perf_counter()
+        
         html, cached, t_fetch = await self.fetch_html(url, use_cache=use_cache)
         t0 = time.perf_counter()
         result = self.condense_html(html, url, limit_text_chars=limit_text_chars)
         t_condense = (time.perf_counter() - t0) * 1000
+        
+        total_time = (time.perf_counter() - overall_start) * 1000
         result["timing"] = {
             "t_fetch_ms": round(t_fetch,1),
             "t_condense_ms": round(t_condense,1),
@@ -182,6 +239,8 @@ class PageCondenser:
             "from_cache": cached
         }
         result["url"] = url
+        
+        print(f"[CONDENSE_URL] Completed in {total_time:.1f}ms (fetch: {t_fetch:.1f}ms, condense: {t_condense:.1f}ms)")
         return result
 
 # -------------------- LLM Extractor --------------------
@@ -193,18 +252,41 @@ class LLMExtractor:
         self.model_detail = model_detail
 
     def _call_json(self, model: str, prompt: str) -> Dict[str, Any]:
-        resp = self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type":"json_object"},
-        )
-        return json.loads(resp.choices[0].message.content)
+        print(f"[LLM] Making API call to {model} (prompt length: {len(prompt)} chars)")
+        t_start = time.perf_counter()
+        
+        try:
+            resp = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type":"json_object"},
+            )
+            
+            elapsed = (time.perf_counter() - t_start) * 1000
+            content = resp.choices[0].message.content
+            print(f"[LLM] API call completed in {elapsed:.1f}ms (response: {len(content)} chars)")
+            
+            result = json.loads(content)
+            print(f"[LLM] JSON parsing successful")
+            return result
+            
+        except Exception as e:
+            elapsed = (time.perf_counter() - t_start) * 1000
+            print(f"[LLM] ERROR: API call failed after {elapsed:.1f}ms: {e}")
+            raise
 
     def extract_listing(self, museum_name: str, listing_text: str, anchors: List[Dict[str,Any]]) -> List[ExhibitionListItem]:
+        print(f"[LLM_LISTING] Starting extraction for {museum_name}")
+        print(f"[LLM_LISTING] Input: {len(anchors)} total anchors, {len(listing_text)} chars text")
+        
         # keep only likely exhibition anchors for the LLM context
         ex_anchors = [a for a in anchors if a.get("kind") == "exhibition"]
+        print(f"[LLM_LISTING] Filtered to {len(ex_anchors)} exhibition anchors")
+        
         # reduce token drift: pass the top N anchors and a small slice of text
-        anchors_json = json.dumps(ex_anchors[:80], ensure_ascii=False)
+        top_anchors = ex_anchors[:80]
+        anchors_json = json.dumps(top_anchors, ensure_ascii=False)
+        print(f"[LLM_LISTING] Using top {len(top_anchors)} anchors for LLM context")
         prompt = f"""
 You are given condensed page TEXT and candidate exhibition ANCHORS from the museum listing page for "{museum_name}".
 
@@ -221,15 +303,31 @@ ANCHORS (top 80):
 {anchors_json}
 """
         data = self._call_json(self.model_listing, prompt)
+        
+        raw_items = data.get("items", [])
+        print(f"[LLM_LISTING] LLM returned {len(raw_items)} raw items")
+        
         items = []
-        for it in data.get("items", []):
+        validation_errors = 0
+        for i, it in enumerate(raw_items):
             try:
                 items.append(ExhibitionListItem(**it))
-            except ValidationError:
+                print(f"[LLM_LISTING] Item {i+1}: '{it.get('title', 'NO_TITLE')}'")
+            except ValidationError as e:
+                validation_errors += 1
+                print(f"[LLM_LISTING] Validation error for item {i+1}: {e}")
                 continue
+        
+        if validation_errors > 0:
+            print(f"[LLM_LISTING] Warning: {validation_errors} items failed validation")
+        
+        print(f"[LLM_LISTING] Successfully extracted {len(items)} valid exhibition items")
         return items
 
     def extract_detail(self, museum_name: str, detail_text: str, url: str) -> ExhibitionRecord:
+        print(f"[LLM_DETAIL] Extracting details for: {url}")
+        print(f"[LLM_DETAIL] Input text length: {len(detail_text)} chars")
+        
         prompt = f"""
 Extract a single exhibition record for museum "{museum_name}" from the following TEXT.
 Be concise; if a field is unknown leave it null. Dates should be explicit like "9 October 2025".
@@ -250,11 +348,21 @@ TEXT (truncated to 10k chars):
 {detail_text[:10000]}
 """
         data = self._call_json(self.model_detail, prompt)
+        
         try:
-            return ExhibitionRecord(**data)
-        except ValidationError:
+            record = ExhibitionRecord(**data)
+            print(f"[LLM_DETAIL] Successfully extracted: '{record.title}'")
+            if record.main_artist:
+                print(f"[LLM_DETAIL] Main artist: {record.main_artist}")
+            if record.start_date or record.end_date:
+                print(f"[LLM_DETAIL] Dates: {record.start_date} to {record.end_date}")
+            return record
+            
+        except ValidationError as e:
+            print(f"[LLM_DETAIL] Validation error: {e}")
             # minimal fallback with title if present
             title = data.get("title") or ""
+            print(f"[LLM_DETAIL] Using fallback record with title: '{title}'")
             return ExhibitionRecord(title=title, museum=museum_name, url=url)
 
 # -------------------- Orchestrator --------------------
@@ -269,43 +377,69 @@ class ExhibitionsOrchestrator:
         self.cache = cache
 
     async def _get_listing_bundle(self, museum_url: str) -> Dict[str, Any]:
+        print(f"[ORCHESTRATOR] Getting listing bundle for: {museum_url}")
+        t_start = time.perf_counter()
+        
         base_bundle = await self.c.condense_url(museum_url, use_cache=self.cache)
         bundles = [base_bundle]
+        print(f"[ORCHESTRATOR] Base bundle: {len(base_bundle['anchors'])} anchors, {len(base_bundle['text'])} chars")
+        
         if self.follow_pagination:
             pagers = [a for a in base_bundle["anchors"] if a.get("pager")]
+            print(f"[ORCHESTRATOR] Found {len(pagers)} pagination links")
+            
             # follow up to 3 pagination links to avoid explosion
-            for a in pagers[:3]:
+            for i, a in enumerate(pagers[:3]):
+                print(f"[ORCHESTRATOR] Following pagination link {i+1}: {a['href']}")
                 try:
                     b = await self.c.condense_url(a["href"], use_cache=self.cache)
                     bundles.append(b)
-                except Exception:
+                    print(f"[ORCHESTRATOR] Pagination {i+1} success: {len(b['anchors'])} anchors, {len(b['text'])} chars")
+                except Exception as e:
+                    print(f"[ORCHESTRATOR] Pagination {i+1} failed: {e}")
                     continue
+        
         # merge anchors + take longest text
         anchors = []
         text_chunks = []
-        for b in bundles:
+        for i, b in enumerate(bundles):
             anchors.extend(b["anchors"])
             text_chunks.append(b["text"])
+            print(f"[ORCHESTRATOR] Bundle {i}: {len(b['anchors'])} anchors, {len(b['text'])} chars")
+        
+        merged_text = "\n".join(text_chunks)[:16000]
         merged = {
-            "text": "\n".join(text_chunks)[:16000],
+            "text": merged_text,
             "anchors": anchors,
             "timing": base_bundle["timing"],
             "url": museum_url
         }
+        
+        elapsed = (time.perf_counter() - t_start) * 1000
+        print(f"[ORCHESTRATOR] Listing bundle complete in {elapsed:.1f}ms: {len(anchors)} total anchors, {len(merged_text)} chars")
         return merged
 
     async def _fetch_detail_and_extract(self, museum_name: str, href: str, timings: Dict[str, Any]) -> Optional[Exhibition]:
+        print(f"[DETAIL] Starting detail extraction for: {href}")
         async with self.semaphore:
             t0 = time.perf_counter()
             try:
                 bundle = await self.c.condense_url(href, use_cache=self.cache)
-            except Exception:
-                timings[href] = {"status": "fetch_error"}
+                print(f"[DETAIL] Fetch successful: {bundle['html_chars']} html chars -> {bundle['text_chars']} text chars")
+            except Exception as e:
+                elapsed = (time.perf_counter() - t0) * 1000
+                print(f"[DETAIL] Fetch failed after {elapsed:.1f}ms: {e}")
+                timings[href] = {"status": "fetch_error", "error": str(e)}
                 return None
+                
             t_fetch_total = bundle["timing"]["t_total_ms"]
             t1 = time.perf_counter()
             rec = self.llm.extract_detail(museum_name, bundle["text"], href)
             t_llm = (time.perf_counter() - t1) * 1000
+            
+            total_elapsed = (time.perf_counter() - t0) * 1000
+            print(f"[DETAIL] Detail extraction completed in {total_elapsed:.1f}ms (fetch: {t_fetch_total:.1f}ms, llm: {t_llm:.1f}ms)")
+            
             timings[href] = {
                 "status": "ok",
                 "t_fetch_ms": round(t_fetch_total,1),
@@ -317,48 +451,93 @@ class ExhibitionsOrchestrator:
             return Exhibition(**rec.dict())
 
     async def run_for_museum(self, museum_name: str, listing_url: str) -> Dict[str, Any]:
+        print(f"\n[MUSEUM] ========== Starting processing for {museum_name} ==========\n")
         overall_start = time.perf_counter()
+        
+        print(f"[MUSEUM] Step 1: Getting listing bundle")
         listing_bundle = await self._get_listing_bundle(listing_url)
         t_listing = listing_bundle["timing"]
+        print(f"[MUSEUM] Listing bundle obtained in {t_listing['t_total_ms']}ms")
 
         # LLM: pick exhibitions from anchors
+        print(f"[MUSEUM] Step 2: LLM extraction of exhibition list")
         t0 = time.perf_counter()
         items = self.llm.extract_listing(museum_name, listing_bundle["text"], listing_bundle["anchors"])
         t_llm_listing = (time.perf_counter() - t0) * 1000
+        print(f"[MUSEUM] LLM listing extraction completed in {t_llm_listing:.1f}ms")
 
         # Dedup by href
+        print(f"[MUSEUM] Step 3: Deduplicating by href")
         seen = set(); todo = []
         for it in items:
             href = it.href
-            if href in seen: continue
+            if href in seen: 
+                print(f"[MUSEUM] Duplicate href skipped: {href}")
+                continue
             seen.add(href); todo.append(it)
+        print(f"[MUSEUM] After dedup: {len(todo)} unique exhibitions to process")
 
         # Fetch details concurrently
+        print(f"[MUSEUM] Step 4: Fetching details concurrently (max {self.semaphore._value} concurrent)")
         per_page_timings: Dict[str, Any] = {}
         coros = [self._fetch_detail_and_extract(museum_name, it.href, per_page_timings) for it in todo]
+        
+        t_details_start = time.perf_counter()
         results = await asyncio.gather(*coros)
+        t_details = (time.perf_counter() - t_details_start) * 1000
+        print(f"[MUSEUM] All detail fetching completed in {t_details:.1f}ms")
 
         # Dedup by normalized title & fill museum
+        print(f"[MUSEUM] Step 5: Final deduplication by normalized title")
         uniq, titles_seen = [], set()
-        for ex in results:
-            if not ex or not ex.title: continue
+        skipped_count = 0
+        for i, ex in enumerate(results):
+            if not ex or not ex.title: 
+                skipped_count += 1
+                continue
             ex.museum = museum_name
             key = normalize_title_key(ex.title)
-            if key in titles_seen: continue
+            if key in titles_seen: 
+                print(f"[MUSEUM] Duplicate title skipped: '{ex.title}'")
+                skipped_count += 1
+                continue
             titles_seen.add(key); uniq.append(ex)
+            print(f"[MUSEUM] Added exhibition {len(uniq)}: '{ex.title}'")
+        
+        if skipped_count > 0:
+            print(f"[MUSEUM] Skipped {skipped_count} exhibitions (duplicates or empty)")
 
         overall_ms = (time.perf_counter() - overall_start) * 1000
+        
+        # Count successful vs failed detail fetches
+        scraped_count = len([x for x in results if x])
+        failed_count = len(todo) - scraped_count
+        
+        print(f"\n[MUSEUM] ========== Summary for {museum_name} ==========\n")
+        print(f"[MUSEUM] Total processing time: {overall_ms:.1f}ms")
+        print(f"[MUSEUM] Listing fetch: {t_listing['t_total_ms']}ms")
+        print(f"[MUSEUM] Listing LLM: {t_llm_listing:.1f}ms")
+        print(f"[MUSEUM] Detail fetching: {t_details:.1f}ms")
+        print(f"[MUSEUM] Exhibition counts:")
+        print(f"[MUSEUM]   - Candidates found: {len(todo)}")
+        print(f"[MUSEUM]   - Successfully scraped: {scraped_count}")
+        print(f"[MUSEUM]   - Failed to scrape: {failed_count}")
+        print(f"[MUSEUM]   - Final unique: {len(uniq)}")
+        print(f"[MUSEUM] ================================================\n")
+        
         summary = {
             "museum": museum_name,
             "listing_url": listing_url,
             "counts": {
                 "todo": len(todo),
-                "scraped": len([x for x in results if x]),
+                "scraped": scraped_count,
+                "failed": failed_count,
                 "unique": len(uniq)
             },
             "timing_ms": {
                 "listing_fetch": t_listing["t_total_ms"],
                 "listing_llm": round(t_llm_listing,1),
+                "details_fetch": round(t_details,1),
                 "overall": round(overall_ms,1)
             },
             "per_page": per_page_timings
@@ -368,40 +547,125 @@ class ExhibitionsOrchestrator:
 # -------------------- CLI / Example --------------------
 
 async def main():
+    print("[MAIN] ========================================")
+    print("[MAIN] Exhibition Pipeline Starting")
+    print("[MAIN] ========================================\n")
+    
+    main_start = time.perf_counter()
+    
     museums = [
         {"name": "National Gallery of Ireland", "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions"},
         # {"name": "The Met", "url": "https://www.metmuseum.org/exhibitions"},
         # {"name": "Fine Arts Museums of San Francisco", "url": "https://www.famsf.org/whats-on"},
     ]
+    
+    print(f"[MAIN] Configuration:")
+    print(f"[MAIN]   - Museums to process: {len(museums)}")
+    for i, m in enumerate(museums, 1):
+        print(f"[MAIN]   - Museum {i}: {m['name']}")
+    print()
 
+    print(f"[MAIN] Initializing components...")
     condenser = PageCondenser()
     llm = LLMExtractor(model_listing="gpt-5-mini", model_detail="gpt-5-mini")
     orch = ExhibitionsOrchestrator(condenser, llm, follow_pagination=True, detail_concurrency=12, cache=True)
+    print(f"[MAIN] Components initialized (concurrency: 12, cache: enabled, pagination: enabled)\n")
 
     all_out = {"runs": [], "exhibitions": []}
+    total_exhibitions = 0
+    
     try:
-        for m in museums:
-            print(f"\n=== {m['name']} ===")
-            result = await orch.run_for_museum(m["name"], m["url"])
-            # logging
-            s = result["summary"]
-            print(f"Listing fetch: {s['timing_ms']['listing_fetch']} ms | LLM(listing): {s['timing_ms']['listing_llm']} ms | Overall: {s['timing_ms']['overall']} ms")
-            print(f"Found {s['counts']['todo']} candidates → {s['counts']['scraped']} details → {s['counts']['unique']} unique exhibitions")
-            # per-page timings
-            slow = sorted(s["per_page"].items(), key=lambda kv: (kv[1].get("t_fetch_ms",0)+kv[1].get("t_llm_ms",0)), reverse=True)[:5]
-            for url, t in slow:
-                if t.get("status")=="ok":
-                    print(f"  · {url} | fetch {t['t_fetch_ms']} ms, llm {t['t_llm_ms']} ms, text {t['text_chars']} chars")
-            all_out["runs"].append(s)
-            all_out["exhibitions"].extend(result["exhibitions"])
+        for i, m in enumerate(museums, 1):
+            print(f"[MAIN] Processing museum {i}/{len(museums)}: {m['name']}")
+            museum_start = time.perf_counter()
+            
+            try:
+                result = await orch.run_for_museum(m["name"], m["url"])
+                museum_time = (time.perf_counter() - museum_start) * 1000
+                
+                # logging
+                s = result["summary"]
+                exhibitions_found = len(result["exhibitions"])
+                total_exhibitions += exhibitions_found
+                
+                print(f"[MAIN] Museum {i} completed in {museum_time:.1f}ms")
+                print(f"[MAIN] Timing breakdown: Listing {s['timing_ms']['listing_fetch']}ms | LLM {s['timing_ms']['listing_llm']}ms | Details {s['timing_ms']['details_fetch']}ms")
+                print(f"[MAIN] Results: {s['counts']['todo']} candidates → {s['counts']['scraped']} scraped → {s['counts']['unique']} unique")
+                
+                # Show slowest pages for debugging
+                if s["per_page"]:
+                    print(f"[MAIN] Slowest detail pages:")
+                    slow = sorted(s["per_page"].items(), key=lambda kv: (kv[1].get("t_fetch_ms",0)+kv[1].get("t_llm_ms",0)), reverse=True)[:3]
+                    for url, t in slow:
+                        if t.get("status")=="ok":
+                            total_time = t.get('t_fetch_ms', 0) + t.get('t_llm_ms', 0)
+                            cache_status = "(cached)" if t.get('from_cache') else "(fresh)"
+                            print(f"[MAIN]   • {total_time:.1f}ms {cache_status}: {url[:80]}...")
+                        elif t.get("status") == "fetch_error":
+                            print(f"[MAIN]   • FAILED: {url[:80]}... - {t.get('error', 'Unknown error')}")
+                
+                all_out["runs"].append(s)
+                all_out["exhibitions"].extend(result["exhibitions"])
+                
+            except Exception as e:
+                museum_time = (time.perf_counter() - museum_start) * 1000
+                print(f"[MAIN] ERROR: Museum {i} failed after {museum_time:.1f}ms: {e}")
+                print(f"[MAIN] Continuing with next museum...")
+                continue
+            
+            print(f"[MAIN] Museum {i} summary: {exhibitions_found} exhibitions added\n")
+            
+    except KeyboardInterrupt:
+        print(f"[MAIN] Interrupted by user")
+        raise
+    except Exception as e:
+        print(f"[MAIN] Unexpected error: {e}")
+        raise
     finally:
+        print(f"[MAIN] Closing HTTP client...")
         await condenser.close()
+        print(f"[MAIN] HTTP client closed")
 
     # Save artifacts
-    out_dir = Path("out"); out_dir.mkdir(exist_ok=True)
-    Path(out_dir / "exhibitions.json").write_text(json.dumps(all_out["exhibitions"], indent=2, ensure_ascii=False), encoding="utf-8")
-    Path(out_dir / "runs_summary.json").write_text(json.dumps(all_out["runs"], indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"\nSaved: out/exhibitions.json ({len(all_out['exhibitions'])} records), out/runs_summary.json")
+    main_elapsed = (time.perf_counter() - main_start) * 1000
+    
+    print(f"[MAIN] ========================================")
+    print(f"[MAIN] Pipeline Complete - Saving Results")
+    print(f"[MAIN] ========================================\n")
+    
+    print(f"[MAIN] Final Summary:")
+    print(f"[MAIN]   - Total runtime: {main_elapsed:.1f}ms ({main_elapsed/1000:.1f}s)")
+    print(f"[MAIN]   - Museums processed: {len(all_out['runs'])}/{len(museums)}")
+    print(f"[MAIN]   - Total exhibitions found: {len(all_out['exhibitions'])}")
+    print(f"[MAIN]   - Average time per museum: {main_elapsed/max(len(all_out['runs']), 1):.1f}ms")
+    print()
+    
+    print(f"[MAIN] Saving output files...")
+    save_start = time.perf_counter()
+    
+    out_dir = Path("out")
+    out_dir.mkdir(exist_ok=True)
+    
+    exhibitions_file = out_dir / "exhibitions.json"
+    runs_file = out_dir / "runs_summary.json"
+    
+    try:
+        exhibitions_file.write_text(json.dumps(all_out["exhibitions"], indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"[MAIN] ✓ Saved exhibitions: {exhibitions_file} ({len(all_out['exhibitions'])} records)")
+        
+        runs_file.write_text(json.dumps(all_out["runs"], indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"[MAIN] ✓ Saved run summary: {runs_file}")
+        
+        save_elapsed = (time.perf_counter() - save_start) * 1000
+        print(f"[MAIN] File saving completed in {save_elapsed:.1f}ms")
+        
+    except Exception as e:
+        print(f"[MAIN] ERROR: Failed to save files: {e}")
+        raise
+    
+    print(f"\n[MAIN] ========================================")
+    print(f"[MAIN] Exhibition Pipeline Finished Successfully")
+    print(f"[MAIN] ========================================")
 
 if __name__ == "__main__":
     asyncio.run(main())
