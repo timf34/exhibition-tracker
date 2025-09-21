@@ -1,4 +1,3 @@
-# exhibitions_pipeline.py
 import asyncio, time, json, re, os, hashlib
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any, Tuple
@@ -36,7 +35,7 @@ class ExhibitionListItem(BaseModel):
 class ExhibitionRecord(BaseModel):
     title: str
     main_artist: Optional[str] = None
-    other_artists: Optional[List[str]] = []
+    other_artists: Optional[List[str]] = Field(default_factory=list)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     museum: Optional[str] = None
@@ -62,7 +61,8 @@ def sha1(s: str) -> str:
 # -------------------- Condenser --------------------
 
 class PageCondenser:
-    ALLOWED_TEXT_TAGS = {"h1","h2","h3","h4","p","li","time","figcaption"}
+    # Include more tags where dates and info might hide (from v2)
+    ALLOWED_TEXT_TAGS = {"h1","h2","h3","h4","p","li","time","figcaption","span","dt","dd","em","strong"}
     MAIN_SELECTORS = ["main", "#content", "#swup", "[role=main]", "article", ".content", ".exhibitions", "#exhibitions"]
 
     def __init__(self, cache_dir=".cache_html", timeout=20.0, http2=True):
@@ -138,7 +138,8 @@ class PageCondenser:
         href = a["href"].lower()
         is_event = ("calendar" in href) or (re.search(r"\bevent(s)?\b", text))
         is_exhibition = (("exhibit" in text) or ("exhibition" in text) or ("/exhibitions" in href)) and not is_event
-        is_pager = bool(re.search(r"\b(next|more|see all|load more|view all|past exhibitions|previous)\b", text))
+        # Keep pagination detection but be less aggressive about filtering
+        is_pager = bool(re.search(r"\b(next|more|see all|load more|view all|previous)\b", text))
         return ("exhibition" if is_exhibition else "event" if is_event else "other",
                 "pagination" if is_pager else None)
 
@@ -154,6 +155,24 @@ class PageCondenser:
                     return "\n".join(lines)[:limit_chars]
         text = norm_space(node.text())[:limit_chars]
         return "\n".join(lines) if lines else text
+    
+    def _meta_descriptions(self, doc: HTMLParser) -> str:
+        """Extract meta descriptions (from v2) to help find dates/summaries"""
+        out = []
+        for sel in [
+            "meta[property='og:description']",
+            "meta[name='og:description']",
+            "meta[name='twitter:description']",
+            "meta[name='description']",
+        ]:
+            try:
+                m = doc.css_first(sel)
+                if m:
+                    c = m.attributes.get("content")
+                    if c: out.append(norm_space(c))
+            except Exception:
+                pass
+        return " ".join(out)
 
     def _anchors_from(self, node, base_url, max_items=1000) -> List[Dict[str, Any]]:
         seen, out = set(), []
@@ -214,6 +233,12 @@ class PageCondenser:
         
         t_text_start = time.perf_counter()
         text = self._take_text(main, limit_chars=limit_text_chars)
+        
+        # Add meta descriptions (from v2)
+        meta = self._meta_descriptions(doc)
+        if meta:
+            text = f"{meta}\n{text}"
+        
         t_text = (time.perf_counter() - t_text_start) * 1000
         print(f"[CONDENSE] Extracted text ({len(text)} chars) in {t_text:.1f}ms")
         
@@ -433,9 +458,22 @@ class ExhibitionsOrchestrator:
                 return None
                 
             t_fetch_total = bundle["timing"]["t_total_ms"]
+            
+            # KEY SPEEDUP: Run LLM in thread pool for parallelism (from v2)
             t1 = time.perf_counter()
-            rec = self.llm.extract_detail(museum_name, bundle["text"], href)
-            t_llm = (time.perf_counter() - t1) * 1000
+            try:
+                rec = await asyncio.to_thread(
+                    self.llm.extract_detail, 
+                    museum_name, 
+                    bundle["text"], 
+                    href
+                )
+                t_llm = (time.perf_counter() - t1) * 1000
+            except Exception as e:
+                elapsed = (time.perf_counter() - t0) * 1000
+                print(f"[DETAIL] LLM extraction failed after {elapsed:.1f}ms: {e}")
+                timings[href] = {"status": "llm_error", "error": str(e)}
+                return None
             
             total_elapsed = (time.perf_counter() - t0) * 1000
             print(f"[DETAIL] Detail extraction completed in {total_elapsed:.1f}ms (fetch: {t_fetch_total:.1f}ms, llm: {t_llm:.1f}ms)")
@@ -466,7 +504,7 @@ class ExhibitionsOrchestrator:
         t_llm_listing = (time.perf_counter() - t0) * 1000
         print(f"[MUSEUM] LLM listing extraction completed in {t_llm_listing:.1f}ms")
 
-        # Dedup by href
+        # Dedup by href - DON'T filter aggressively (keep v1 approach)
         print(f"[MUSEUM] Step 3: Deduplicating by href")
         seen = set(); todo = []
         for it in items:
@@ -477,7 +515,7 @@ class ExhibitionsOrchestrator:
             seen.add(href); todo.append(it)
         print(f"[MUSEUM] After dedup: {len(todo)} unique exhibitions to process")
 
-        # Fetch details concurrently
+        # Fetch details concurrently with parallel LLM
         print(f"[MUSEUM] Step 4: Fetching details concurrently (max {self.semaphore._value} concurrent)")
         per_page_timings: Dict[str, Any] = {}
         coros = [self._fetch_detail_and_extract(museum_name, it.href, per_page_timings) for it in todo]
