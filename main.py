@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 def main():
     """Fetch the page and print the raw Beautiful Soup content."""
-    url = "https://www.famsf.org/whats-on"
+    url = "https://www.nationalgallery.ie/art-and-artists/exhibitions"
     
     print(f"Fetching content from: {url}")
     print("=" * 80)
