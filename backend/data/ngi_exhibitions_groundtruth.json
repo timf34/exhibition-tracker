@@ -1,0 +1,172 @@
+[
+	{
+	  "title": "Maurice Marinot – On Paper, In Glass",
+	  "main_artist": "Maurice Marinot",
+	  "other_artists": [],
+	  "start_date": "2 August 2025",
+	  "end_date": "25 January 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "A focused display of Maurice Marinot’s glasswork and drawings, showing pieces from the 1900s to the 1950s and highlighting a significant donation by his daughter.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/maurice-marinot-on-paper-in-glass"
+	},
+	{
+	  "title": "Créatúir na Cartlainne | Tails from the Archive",
+	  "main_artist": null,
+	  "other_artists": [
+		"Stephen McKenna",
+		"Nancy Wynne-Jones",
+		"Conor Fallon",
+		"Bea Orpen",
+		"Barrie Cooke",
+		"Elizabeth C. Yeats",
+		"Oisín Kelly",
+		"Anne Yeats",
+		"Daniel O’Neill",
+		"Justin Larkin",
+		"Basil Rákóczi",
+		"Jack B. Yeats",
+		"Deborah Brown",
+		"Walter Osborne",
+		"William Orpen"
+	  ],
+	  "start_date": "26 June 2025",
+	  "end_date": null,
+	  "museum": "National Gallery of Ireland",
+	  "details": "Celebrates the Gallery’s archives and artists’ relationships with animals; presented in four curated rotations, featuring recent acquisitions to the Centre for the Study of Irish Art.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/creatuir-na-cartlainne"
+	},
+	{
+	  "title": "Picasso: From the Studio",
+	  "main_artist": "Pablo Picasso",
+	  "other_artists": [],
+	  "start_date": "9 October 2025",
+	  "end_date": "22 February 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Major monographic exhibition that explores Picasso in the context of his studios, featuring paintings, sculpture, ceramics and works on paper in collaboration with Musée national Picasso-Paris.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/picasso-from-the-studio"
+	},
+	{
+	  "title": "AIB Young Portrait Prize 2025",
+	  "main_artist": null,
+	  "other_artists": [],
+	  "start_date": "8 November 2025",
+	  "end_date": "15 March 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Exhibition of shortlisted works by young artists (aged 18 and under) selected for the AIB Young Portrait Prize, presented in the Portrait Gallery.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/aib-portrait-prize-2025"
+	},
+	{
+	  "title": "AIB Portrait Prize 2025",
+	  "main_artist": null,
+	  "other_artists": [],
+	  "start_date": "8 November 2025",
+	  "end_date": "15 March 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Shortlisted contemporary portraiture for the AIB Portrait Prize, exhibiting a selection chosen by the judging panel; winner receives a commission and prize.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/aib-portrait-prize-2025"
+	},
+	{
+	  "title": "Turner as Inspiration",
+	  "main_artist": "J.M.W. Turner",
+	  "other_artists": [
+		"Hercules Brabazon",
+		"William Callow",
+		"John Faulkner",
+		"James H. Burgess",
+		"Jennifer Lane",
+		"Niall Naessens"
+	  ],
+	  "start_date": "1 January 2026",
+	  "end_date": "31 January 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Annual display of 31 watercolours by J.M.W. Turner and works by artists inspired by Turner, shown in the Print Gallery.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/turner-as-inspiration"
+	},
+	{
+	  "title": "William Blake: The Age of Romantic Fantasy",
+	  "main_artist": "William Blake",
+	  "other_artists": [
+		"James Barry",
+		"Henry Fuseli",
+		"John Hamilton Mortimer",
+		"Thomas Rowlandson",
+		"J.M.W. Turner"
+	  ],
+	  "start_date": "16 April 2026",
+	  "end_date": "19 July 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Curated in partnership with Tate, this exhibition presents Blake’s visionary works alongside paintings and drawings by his contemporaries.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/william-blake-the-age-of-romantic-fantasy"
+	},
+	{
+	  "title": "From Rembrandt to Matisse – A Celebration of European Prints and Drawings",
+	  "main_artist": null,
+	  "other_artists": [],
+	  "start_date": "27 June 2026",
+	  "end_date": "8 November 2026",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Special exhibition of around fifty works on paper by European artists from the fifteenth century to the present day, celebrating the Gallery’s holdings.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/from-rembrandt-to-matisse-a-celebration-of-european-prints-and-drawings"
+	},
+	{
+	  "title": "Hilma af Klint: Artist and Visionary",
+	  "main_artist": "Hilma af Klint",
+	  "other_artists": [],
+	  "start_date": "15 October 2026",
+	  "end_date": "7 February 2027",
+	  "museum": "National Gallery of Ireland",
+	  "details": "First major exhibition of Hilma af Klint’s work in Ireland, exploring her spiritual and visionary abstract paintings alongside early portraits and plant studies.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/hilma-af-klint-artist-and-visionary"
+	},
+	{
+	  "title": "Jan Steen: Sacred and Profane",
+	  "main_artist": "Jan Steen",
+	  "other_artists": [],
+	  "start_date": "21 November 2026",
+	  "end_date": "25 April 2027",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Marking the 400th anniversary of Jan Steen’s birth, this exhibition brings together loans and the Gallery’s own works to examine his narrative mastery across genres.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/jan-steen-sacred-and-profane"
+	},
+	{
+	  "title": "Ludovico Mazzolino: The Crossing of the Red Sea",
+	  "main_artist": "Ludovico Mazzolino",
+	  "other_artists": [],
+	  "start_date": "15 February 2025",
+	  "end_date": "6 July 2025",
+	  "museum": "National Gallery of Ireland",
+	  "details": "Special display of Ludovico Mazzolino’s painting The Crossing of the Red Sea.",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/ludovico-mazzolino-the-crossing-of-the-red-sea"
+	},
+	{
+	  "title": "An Artist’s Presence",
+	  "main_artist": null,
+	  "other_artists": [],
+	  "start_date": "17 May 2025",
+	  "end_date": "14 September 2025",
+	  "museum": "National Gallery of Ireland",
+	  "details": "A display exploring the presence and processes of artists in the Gallery’s collection (public programme and sketching tours associated).",
+	  "url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/an-artists-presence"
+	},
+	{
+	"title": "AIB Portrait Prize 2026",
+	"main_artist": null,
+	"other_artists": [],
+	"start_date": "14 November 2026",
+	"end_date": "14 March 2027",
+	"museum": "National Gallery of Ireland",
+	"details": "Annual AIB Portrait Prize exhibition showcasing shortlisted contemporary portraiture; winner receives a cash prize and a commission for the National Portrait Collection.",
+	"url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/aib-portrait-prize-2026"
+	},
+	{
+		"title": "AIB Young Portrait Prize 2026",
+		"main_artist": null,
+		"other_artists": [],
+		"start_date": "14 November 2026",
+		"end_date": "14 March 2027",
+		"museum": "National Gallery of Ireland",
+		"details": "Exhibition of shortlisted works for the AIB Young Portrait Prize (open to artists aged 18 and under), shown in the Portrait Gallery.",
+		"url": "https://www.nationalgallery.ie/art-and-artists/exhibitions/aib-young-portrait-prize-2026"
+	  }
+]
+  
