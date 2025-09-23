@@ -102,7 +102,16 @@ class ExhibitionsOrchestrator:
                 "text_chars": bundle["text_chars"],
                 "from_cache": bundle["timing"]["from_cache"]
             }
-            return Exhibition(**rec.dict())
+            return Exhibition(
+                title=rec.title,
+                main_artist=rec.main_artist,
+                other_artists=rec.other_artists,
+                start_date=rec.start_date,
+                end_date=rec.end_date,
+                museum_name=museum_name,
+                details=rec.details,
+                url=rec.url,
+            )
 
     async def run_for_museum(self, museum_name: str, listing_url: str) -> Dict[str, Any]:
         print(f"\n[MUSEUM] ========== Starting processing for {museum_name} ==========\n")
@@ -116,7 +125,12 @@ class ExhibitionsOrchestrator:
         # LLM: pick exhibitions from anchors
         print(f"[MUSEUM] Step 2: LLM extraction of exhibition list")
         t0 = time.perf_counter()
-        items = self.llm.extract_listing(museum_name, listing_bundle["text"], listing_bundle["anchors"])
+        items = await asyncio.to_thread(
+            self.llm.extract_listing,
+            museum_name,
+            listing_bundle["text"],
+            listing_bundle["anchors"],
+        )
         t_llm_listing = (time.perf_counter() - t0) * 1000
         print(f"[MUSEUM] LLM listing extraction completed in {t_llm_listing:.1f}ms")
 
@@ -139,7 +153,14 @@ class ExhibitionsOrchestrator:
         coros = [self._fetch_detail_and_extract(museum_name, it.href, per_page_timings) for it in todo]
         
         t_details_start = time.perf_counter()
-        results = await asyncio.gather(*coros)
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        clean = []
+        for r in results:
+            if isinstance(r, Exception):
+                print(f"[MUSEUM] Detail task error: {r}")
+            elif r:
+                clean.append(r)
+        results = clean
         t_details = (time.perf_counter() - t_details_start) * 1000
         print(f"[MUSEUM] All detail fetching completed in {t_details:.1f}ms")
 
@@ -152,7 +173,7 @@ class ExhibitionsOrchestrator:
             if not ex or not ex.title: 
                 skipped_count += 1
                 continue
-            ex.museum = museum_name
+            ex.museum_name = museum_name
             key = normalize_title_key(ex.title)
             if key in titles_seen: 
                 print(f"[MUSEUM] Duplicate title skipped: '{ex.title}'")
@@ -201,3 +222,5 @@ class ExhibitionsOrchestrator:
             "per_page": per_page_timings
         }
         return {"summary": summary, "exhibitions": [asdict(x) for x in uniq]}
+
+

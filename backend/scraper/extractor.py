@@ -7,7 +7,7 @@ from backend.scraper.models import ExhibitionListItem, ExhibitionRecord
 
 class LLMExtractor:
     def __init__(self, model_listing="gpt-5-mini", model_detail="gpt-5-mini"):
-        self.client = OpenAI()
+        self.client = OpenAI(timeout=30.0, max_retries=2)
         self.model_listing = model_listing
         self.model_detail = model_detail
 
@@ -20,6 +20,7 @@ class LLMExtractor:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type":"json_object"},
+                timeout=90.0,
             )
             
             elapsed = (time.perf_counter() - t_start) * 1000

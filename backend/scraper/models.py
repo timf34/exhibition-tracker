@@ -156,29 +156,76 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             # Delete old exhibitions for this museum
             conn.execute("DELETE FROM exhibitions WHERE museum_name = ?", (museum_name,))
-            
+
             # Insert new exhibitions
             for ex in exhibitions:
-                ex_dict = ex.to_dict()
+                # Accept either dataclass Exhibition or plain dict (defensive)
+                if hasattr(ex, "to_dict"):
+                    ex_dict = ex.to_dict()
+                elif isinstance(ex, dict):
+                    ex_dict = dict(ex)
+                else:
+                    # fallback: try to asdict
+                    try:
+                        from dataclasses import asdict
+                        ex_dict = asdict(ex)
+                    except Exception:
+                        ex_dict = {}
+
+                # Ensure other_artists is a JSON string or None
+                oa = ex_dict.get("other_artists")
+                if isinstance(oa, list):
+                    try:
+                        oa_val = json.dumps(oa, ensure_ascii=False)
+                    except Exception:
+                        # last-resort: convert elements to str then dump
+                        oa_val = json.dumps([str(x) for x in oa], ensure_ascii=False)
+                elif oa is None:
+                    oa_val = None
+                else:
+                    # if it's already a string (hopefully JSON), keep it
+                    oa_val = oa
+
+                # Ensure scraped_at is an ISO string (SQLite expects text)
+                scraped_at = ex_dict.get("scraped_at")
+                if scraped_at is None:
+                    scraped_at_val = datetime.now(UTC).isoformat()
+                elif isinstance(scraped_at, str):
+                    scraped_at_val = scraped_at
+                else:
+                    # if it's a datetime, convert; otherwise stringify
+                    try:
+                        scraped_at_val = scraped_at.isoformat()
+                    except Exception:
+                        scraped_at_val = str(scraped_at)
+
+                # Build params in same order as the INSERT statement
+                params = (
+                    ex_dict.get('title'),
+                    ex_dict.get('main_artist'),
+                    oa_val,
+                    ex_dict.get('start_date'),
+                    ex_dict.get('end_date'),
+                    ex_dict.get('museum_name') or museum_name,
+                    ex_dict.get('museum_city'),
+                    ex_dict.get('museum_country'),
+                    ex_dict.get('details'),
+                    ex_dict.get('url'),
+                    scraped_at_val
+                )
+
+                # Debugging: if any param is a list (shouldn't happen), show details
+                for i, p in enumerate(params, start=1):
+                    if isinstance(p, (list, dict, set)):
+                        print(f"[DB DEBUG] Unexpected non-scalar param at index {i} for title={ex_dict.get('title')}: {type(p)} -> {p}")
+
                 conn.execute("""
                     INSERT OR IGNORE INTO exhibitions (
                         title, main_artist, other_artists, start_date, end_date,
                         museum_name, museum_city, museum_country, details, url, scraped_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    ex_dict['title'],
-                    ex_dict.get('main_artist'),
-                    ex_dict.get('other_artists'),
-                    ex_dict.get('start_date'),
-                    ex_dict.get('end_date'),
-                    ex_dict['museum_name'],
-                    ex_dict.get('museum_city'),
-                    ex_dict.get('museum_country'),
-                    ex_dict.get('details'),
-                    ex_dict.get('url'),
-                    ex_dict.get('scraped_at')
-                ))
-        
+                """, params)
+
         # Also save all exhibitions to JSON file for easy viewing
         self._export_to_json()
         print(f"[DB] Saved {len(exhibitions)} exhibitions for {museum_name} to DB and JSON")
