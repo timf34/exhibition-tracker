@@ -7,8 +7,8 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import asyncio
 
-from models import DatabaseManager
-from scheduler import MuseumScheduler
+from backend.scraper.models import DatabaseManager
+from backend.scheduler import MuseumScheduler
 
 app = FastAPI(title="Art Exhibition Aggregator API")
 

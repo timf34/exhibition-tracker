@@ -9,11 +9,10 @@ from typing import List, Dict, Any, Tuple
 import logging
 
 # Support running either from project root (python -m backend.scheduler)
-# or from inside backend directory (python scheduler.py)
-from backend.scraper.models import DatabaseManager, Museum, Exhibition
-from backend.scraper.condenser import PageCondenser
-from backend.scraper.extractor import LLMExtractor
-from backend.scraper.orchestrator import ExhibitionsOrchestrator
+from scraper.models import DatabaseManager, Museum, Exhibition
+from scraper.condenser import PageCondenser
+from scraper.extractor import LLMExtractor
+from scraper.orchestrator import ExhibitionsOrchestrator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Tuple
 import httpx
 from selectolax.parser import HTMLParser
 
-from backend.scraper.utils import sha1, norm_space
+from scraper.utils import sha1, norm_space
 from urllib.parse import urljoin, urlparse
 
 

@@ -1,9 +1,12 @@
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import asyncio
-from backend.scraper.condenser import PageCondenser
-from backend.scraper.extractor import LLMExtractor
-from backend.scraper.models import Exhibition
+from dataclasses import asdict
+
+from scraper.condenser import PageCondenser
+from scraper.extractor import LLMExtractor
+from scraper.models import Exhibition
+from scraper.utils import normalize_title_key
 
 class ExhibitionsOrchestrator:
     def __init__(self, condenser: PageCondenser, llm: LLMExtractor,
@@ -72,7 +75,7 @@ class ExhibitionsOrchestrator:
                 
             t_fetch_total = bundle["timing"]["t_total_ms"]
             
-            # KEY SPEEDUP: Run LLM in thread pool for parallelism (from v2)
+            # KEY SPEEDUP: Run LLM in thread pool for parallelism
             t1 = time.perf_counter()
             try:
                 rec = await asyncio.to_thread(
@@ -119,13 +122,15 @@ class ExhibitionsOrchestrator:
 
         # Dedup by href - DON'T filter aggressively (keep v1 approach)
         print(f"[MUSEUM] Step 3: Deduplicating by href")
-        seen = set(); todo = []
+        seen = set()
+        todo = []
         for it in items:
             href = it.href
             if href in seen: 
                 print(f"[MUSEUM] Duplicate href skipped: {href}")
                 continue
-            seen.add(href); todo.append(it)
+            seen.add(href)
+            todo.append(it)
         print(f"[MUSEUM] After dedup: {len(todo)} unique exhibitions to process")
 
         # Fetch details concurrently with parallel LLM
@@ -140,7 +145,8 @@ class ExhibitionsOrchestrator:
 
         # Dedup by normalized title & fill museum
         print(f"[MUSEUM] Step 5: Final deduplication by normalized title")
-        uniq, titles_seen = [], set()
+        uniq = []
+        titles_seen = set()
         skipped_count = 0
         for i, ex in enumerate(results):
             if not ex or not ex.title: 
@@ -152,7 +158,8 @@ class ExhibitionsOrchestrator:
                 print(f"[MUSEUM] Duplicate title skipped: '{ex.title}'")
                 skipped_count += 1
                 continue
-            titles_seen.add(key); uniq.append(ex)
+            titles_seen.add(key)
+            uniq.append(ex)
             print(f"[MUSEUM] Added exhibition {len(uniq)}: '{ex.title}'")
         
         if skipped_count > 0:

@@ -38,7 +38,7 @@ class Exhibition:
     def to_dict(self) -> Dict:
         d = asdict(self)
         if self.other_artists:
-            d['other_artists'] = json.dumps(self.other_artists)
+            d['other_artists'] = json.dumps(self.other_artists) if isinstance(self.other_artists, list) else self.other_artists
         if self.scraped_at:
             d['scraped_at'] = self.scraped_at.isoformat()
         return d
@@ -61,8 +61,9 @@ class ExhibitionRecord(BaseModel):
 # -------------------- Database Manager --------------------
 
 class DatabaseManager:
-    def __init__(self, db_path: str = "data/exhibitions.db"):
+    def __init__(self, db_path: str = "backend/data/exhibitions.db"):
         self.db_path = Path(db_path)
+        self.json_path = self.db_path.parent / "exhibitions.json"  # JSON file alongside DB
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_database()
     
@@ -177,6 +178,45 @@ class DatabaseManager:
                     ex_dict.get('url'),
                     ex_dict.get('scraped_at')
                 ))
+        
+        # Also save all exhibitions to JSON file for easy viewing
+        self._export_to_json()
+        print(f"[DB] Saved {len(exhibitions)} exhibitions for {museum_name} to DB and JSON")
+    
+    def _export_to_json(self):
+        """Export all current exhibitions to JSON file"""
+        try:
+            all_exhibitions = self.get_all_exhibitions_for_export()
+            
+            # Save to JSON with pretty formatting
+            with open(self.json_path, 'w', encoding='utf-8') as f:
+                json.dump(all_exhibitions, f, indent=2, ensure_ascii=False, default=str)
+            
+            print(f"[DB] Exported {len(all_exhibitions)} exhibitions to {self.json_path}")
+        except Exception as e:
+            print(f"[DB] Error exporting to JSON: {e}")
+    
+    def get_all_exhibitions_for_export(self) -> List[Dict]:
+        """Get all exhibitions formatted for export"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT * FROM exhibitions 
+                ORDER BY museum_country, museum_city, museum_name, start_date
+            """)
+            
+            exhibitions = []
+            for row in cursor:
+                ex_dict = dict(row)
+                # Parse other_artists JSON if present
+                if ex_dict.get('other_artists'):
+                    try:
+                        ex_dict['other_artists'] = json.loads(ex_dict['other_artists'])
+                    except:
+                        pass
+                exhibitions.append(ex_dict)
+            
+            return exhibitions
     
     def search_exhibitions(self, city: str = None, country: str = None, 
                          artist: str = None, current_only: bool = True) -> List[Dict]:
@@ -210,7 +250,10 @@ class DatabaseManager:
             for row in cursor:
                 ex_dict = dict(row)
                 if ex_dict.get('other_artists'):
-                    ex_dict['other_artists'] = json.loads(ex_dict['other_artists'])
+                    try:
+                        ex_dict['other_artists'] = json.loads(ex_dict['other_artists'])
+                    except:
+                        pass
                 results.append(ex_dict)
             
             return results
@@ -241,6 +284,7 @@ class DatabaseManager:
             reader = csv.DictReader(f)
             
             with sqlite3.connect(self.db_path) as conn:
+                count = 0
                 for row in reader:
                     # Upsert museum
                     conn.execute("""
@@ -252,5 +296,6 @@ class DatabaseManager:
                         row['museum'].strip(),
                         row['url'].strip()
                     ))
+                    count += 1
                     
-        print(f"Museums imported from {csv_path}")
+        print(f"[DB] Imported {count} museums from {csv_path}")
