@@ -4,17 +4,9 @@ from typing import List, Dict, Any, Tuple
 import httpx
 from selectolax.parser import HTMLParser
 
-from scraper.utils import sha1, norm_space
+from backend.scraper.utils import sha1, norm_space
 from urllib.parse import urljoin, urlparse
 
-
-from typing import List, Dict, Any, Tuple
-import time, re
-from urllib.parse import urljoin, urlparse
-from pathlib import Path
-import httpx
-from selectolax.parser import HTMLParser
-from .utils import norm_space, sha1
 
 class PageCondenser:
     # Include more tags where dates and info might hide (from v2)

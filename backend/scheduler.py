@@ -1,6 +1,14 @@
 """
 Smart scheduler for museum scraping with incremental updates
 """
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())   # find .env anywhere up the tree
+
+import os, sys, logging
+if not os.getenv("OPENAI_API_KEY"):
+    logging.error("OPENAI_API_KEY not found in environment. Please create .env or set the env var.")
+    sys.exit("Missing OPENAI_API_KEY")
+
 import asyncio
 import csv
 from datetime import datetime, UTC
@@ -9,10 +17,10 @@ from typing import List, Dict, Any, Tuple
 import logging
 
 # Support running either from project root (python -m backend.scheduler)
-from scraper.models import DatabaseManager, Museum, Exhibition
-from scraper.condenser import PageCondenser
-from scraper.extractor import LLMExtractor
-from scraper.orchestrator import ExhibitionsOrchestrator
+from backend.scraper.models import DatabaseManager, Museum, Exhibition
+from backend.scraper.condenser import PageCondenser
+from backend.scraper.extractor import LLMExtractor
+from backend.scraper.orchestrator import ExhibitionsOrchestrator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

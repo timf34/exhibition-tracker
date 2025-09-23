@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 from pydantic import ValidationError
 from openai import OpenAI
 
-from scraper.models import ExhibitionListItem, ExhibitionRecord
+from backend.scraper.models import ExhibitionListItem, ExhibitionRecord
 
 class LLMExtractor:
     def __init__(self, model_listing="gpt-5-mini", model_detail="gpt-5-mini"):

@@ -3,10 +3,10 @@ from typing import Dict, Any, Optional, List
 import asyncio
 from dataclasses import asdict
 
-from scraper.condenser import PageCondenser
-from scraper.extractor import LLMExtractor
-from scraper.models import Exhibition
-from scraper.utils import normalize_title_key
+from backend.scraper.condenser import PageCondenser
+from backend.scraper.extractor import LLMExtractor
+from backend.scraper.models import Exhibition
+from backend.scraper.utils import normalize_title_key
 
 class ExhibitionsOrchestrator:
     def __init__(self, condenser: PageCondenser, llm: LLMExtractor,

@@ -1,6 +1,14 @@
 """
 FastAPI backend for serving exhibition data
 """
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())   # find .env anywhere up the tree
+
+import os, sys, logging
+if not os.getenv("OPENAI_API_KEY"):
+    logging.error("OPENAI_API_KEY not found in environment. Please create .env or set the env var.")
+    sys.exit("Missing OPENAI_API_KEY")
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
