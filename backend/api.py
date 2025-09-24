@@ -105,8 +105,8 @@ def get_museums() -> List[Dict]:
         return [
             {
                 "name": m.name,
-                "city": m.city,
-                "country": m.country,
+                "city": m.city_name,        # <-- fix field names
+                "country": m.country_name,  # <-- fix field names
                 "url": m.url,
                 "last_scraped": m.last_scraped.isoformat() if m.last_scraped else None,
                 "status": m.scrape_status,
@@ -116,7 +116,7 @@ def get_museums() -> List[Dict]:
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+        
 @app.post("/api/scrape/museum/{museum_name}")
 async def scrape_museum(museum_name: str, background_tasks: BackgroundTasks):
     """
