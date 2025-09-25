@@ -22,12 +22,11 @@ class PageCondenser:
             headers={"User-Agent": "Mozilla/5.0 (compatible; Exhibitions/1.1)"},
             timeout=self.timeout,
         )
-        # --- Selenium / Edge fallback (lazy-init) ---
+        # --- Selenium fallback config (matches the working Edge-only script) ---
         self._driver = None
-        self._selenium_headless = selenium_headless
-        self._edge_driver_path = edge_driver_path
-        # Use Microsoft's official msedgedriver mirror for Selenium Manager downloads
-        os.environ.setdefault("SE_DRIVER_MIRROR_URL", "https://msedgedriver.microsoft.com")
+        self._selenium_headless = True          # default headless; we'll flip to False if needed
+        self._edge_driver_path = os.environ.get("EDGE_DRIVER_PATH", "")  # optional
+        os.environ.setdefault("SE_DRIVER_MIRROR_URL", "https://msedgedriver.microsoft.com")  # use official Edge mirror
 
     async def close(self):
         await self.client.aclose()
@@ -65,97 +64,151 @@ class PageCondenser:
             return html, False, elapsed
         except Exception as e:
             print(f"[FETCH] ERROR with httpx: {e}")
+
+            # Quick retry with HTTP/1.1 (several museum sites reset HTTP/2 streams)
+            try:
+                print("[FETCH] Retrying with HTTP/1.1 (httpx http2=False)…")
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    http2=False,
+                    headers=self.client.headers,
+                    timeout=self.timeout,
+                ) as c1:
+                    r2 = await c1.get(url)
+                    r2.raise_for_status()
+                    html = r2.text
+                    if use_cache:
+                        key.write_text(html, encoding="utf-8")
+                        print(f"[FETCH] Cached to: {key.name}")
+                    elapsed = (time.perf_counter() - start) * 1000
+                    print(f"[FETCH] HTTP/1.1 retry successful in {elapsed:.1f}ms")
+                    return html, False, elapsed
+            except Exception as e1:
+                print(f"[FETCH] HTTP/1.1 retry failed: {e1}")
+
             # ---- Fallback to Selenium Edge ----
             try:
-                print("[FETCH] Falling back to Selenium (Edge)...")
+                print("[FETCH] Falling back to Selenium (Edge)…")
                 html = self._selenium_fetch(url)
-                if not html or len(html) < 200:
-                    raise RuntimeError("Selenium returned minimal/empty HTML")
-                if use_cache:
+                # DO NOT raise on minimal HTML; keep what we have.
+                if use_cache and html:
                     key.write_text(html, encoding="utf-8")
                     print(f"[FETCH] Cached Selenium HTML to: {key.name}")
                 elapsed = (time.perf_counter() - start) * 1000
-                print(f"[FETCH] Selenium fetch completed in {elapsed:.1f}ms")
+                print(f"[FETCH] Selenium fetch completed in {elapsed:.1f}ms (chars={len(html)})")
                 return html, False, elapsed
             except Exception as se:
                 print(f"[FETCH] Selenium fallback failed: {se}")
-                # Re-raise original httpx error for upstream handling
                 raise
 
+
     def _selenium_fetch(self, url: str) -> str:
-        """Blocking Selenium (Edge) fetch; returns page_source."""
+        """Fetch HTML via Edge; tolerate renderer timeouts and keep whatever DOM we get."""
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.common.exceptions import TimeoutException, WebDriverException
+        import time
+
+        def _navigate_and_wait(drv):
+            try:
+                drv.set_page_load_timeout(30)
+            except Exception:
+                pass
+
+            try:
+                drv.get(url)
+                # Prefer a text-based readiness, not full load.
+                try:
+                    WebDriverWait(drv, 20).until(
+                        lambda d: d.execute_script(
+                            "return (document.readyState==='interactive' || document.readyState==='complete')"
+                            " && document.body && document.body.innerText && document.body.innerText.length > 500;"
+                        )
+                    )
+                except Exception:
+                    # Fallback: just ensure <body> exists.
+                    WebDriverWait(drv, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            except TimeoutException:
+                # Stop the load and keep what we have.
+                try:
+                    drv.execute_script("window.stop();")
+                except Exception:
+                    pass
+
+            # Nudge lazy content
+            try:
+                drv.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            except Exception:
+                pass
+            time.sleep(2)
+            return drv.page_source or ""
+
+        # Try headless (or current mode)
         drv = self._get_edge_driver()
-        # Use a slightly longer timeout for tricky pages
-        try:
-            drv.set_page_load_timeout(30)
-        except Exception:
-            pass
-        drv.get(url)
+        html = _navigate_and_wait(drv)
 
-        # Try to wait for a body element
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            WebDriverWait(drv, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        except Exception:
-            # continue anyway
-            pass
+        # If DOM is still too thin, one-shot visible retry
+        if (not html) or (len(html) < 500):
+            if self._selenium_headless:
+                # Recreate driver non-headless once
+                try:
+                    drv.quit()
+                except Exception:
+                    pass
+                self._driver = None
+                self._selenium_headless = False
+                drv = self._get_edge_driver()
+                html = _navigate_and_wait(drv)
 
-        # small settle time for dynamic content
-        time.sleep(2)
-        return drv.page_source or ""
+        return html or ""
 
     def _get_edge_driver(self):
-        """Lazy-create a single Edge driver and reuse it."""
+        """Create/reuse a single Edge driver with stable flags."""
+        from selenium import webdriver
+        from selenium.webdriver.edge.options import Options as EdgeOptions
+        from selenium.webdriver.edge.service import Service as EdgeService
+        from selenium.common.exceptions import WebDriverException
+
         if self._driver is not None:
             return self._driver
 
-        # Try Selenium Manager first (preferred)
+        opts = EdgeOptions()
+        # Don't wait for every subresource.
+        opts.page_load_strategy = "eager"
+        if self._selenium_headless:
+            opts.add_argument("--headless=new")
+
+        # Stability flags (mirrors the validator)
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-http2")
+        opts.add_argument("--disable-renderer-backgrounding")
+        opts.add_argument("--disable-background-timer-throttling")
+        opts.add_argument("--disable-features=IsolateOrigins,site-per-process,RendererCodeIntegrity")
+
+        # 1) explicit path if provided
+        if self._edge_driver_path:
+            self._driver = webdriver.Edge(service=EdgeService(self._edge_driver_path), options=opts)
+            return self._driver
+
+        # 2) Selenium Manager (preferred)
         try:
-            from selenium import webdriver
-            from selenium.webdriver.edge.options import Options as EdgeOptions
-            from selenium.webdriver.edge.service import Service as EdgeService
-            from selenium.common.exceptions import SessionNotCreatedException, WebDriverException
-
-            opts = EdgeOptions()
-            if self._selenium_headless:
-                opts.add_argument("--headless=new")
-            # reasonable defaults
-            opts.add_argument("--disable-gpu")
-            opts.add_argument("--no-sandbox")
-            opts.add_argument("--disable-dev-shm-usage")
-            opts.add_argument("--disable-http2")
-
-            if self._edge_driver_path:
-                print("[SE] Using explicit EdgeDriver path")
-                service = EdgeService(executable_path=self._edge_driver_path)
-                self._driver = webdriver.Edge(service=service, options=opts)
-                return self._driver
-
-            print("[SE] Creating Edge driver via Selenium Manager…")
             self._driver = webdriver.Edge(options=opts)
             return self._driver
-        except Exception as e_first:
-            print(f"[SE] Selenium Manager failed: {e_first}. Trying webdriver-manager…")
-            # Fallback to webdriver-manager (requires network)
-            try:
-                from webdriver_manager.microsoft import EdgeChromiumDriverManager
-                from selenium.webdriver.edge.service import Service as EdgeService
-                from selenium import webdriver
-                service = EdgeService(EdgeChromiumDriverManager().install())
-                from selenium.webdriver.edge.options import Options as EdgeOptions
-                opts = EdgeOptions()
-                if self._selenium_headless:
-                    opts.add_argument("--headless=new")
-                opts.add_argument("--disable-gpu")
-                opts.add_argument("--no-sandbox")
-                opts.add_argument("--disable-dev-shm-usage")
-                opts.add_argument("--disable-http2")
-                self._driver = webdriver.Edge(service=service, options=opts)
-                return self._driver
-            except Exception as e_second:
-                raise RuntimeError(f"Failed to create Edge driver: {e_second}") from e_second
+        except WebDriverException:
+            pass
+
+        # 3) webdriver-manager fallback
+        try:
+            from webdriver_manager.microsoft import EdgeChromiumDriverManager
+            service = EdgeService(EdgeChromiumDriverManager().install())
+            self._driver = webdriver.Edge(service=service, options=opts)
+            return self._driver
+        except Exception as e:
+            raise RuntimeError(f"Failed to create Edge driver: {e}")
+
 
     # --------- Condense pipeline ----------
     @staticmethod
