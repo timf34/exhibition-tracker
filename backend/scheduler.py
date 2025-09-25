@@ -7,7 +7,7 @@ load_dotenv(find_dotenv())   # find .env anywhere up the tree
 import os, sys, logging, asyncio, traceback
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Require API key early (helpful in CLI usage too)
 if not os.getenv("OPENAI_API_KEY"):
@@ -44,23 +44,29 @@ class MuseumScheduler:
         logger.info(f"Syncing museums from {self.csv_path}")
         self.db.import_museums_from_csv(str(self.csv_path))
 
-    async def scrape_museum(self, museum: Museum) -> Dict[str, Any]:
+    async def scrape_museum(self, museum: Museum, detail_mode: Optional[str] = None, light_cap: Optional[int] = None) -> Dict[str, Any]:
         """Scrape a single museum"""
         logger.info(f"Starting scrape for {museum.name} ({museum.city_name}, {museum.country_name})")
 
         condenser = PageCondenser()
-        llm = LLLMExtractor = LLMExtractor(model_listing="gpt-5-mini", model_detail="gpt-5-mini")
+        llm = LLMExtractor(model_listing="gpt-5-mini", model_detail="gpt-5-mini")
 
         if ExhibitionsOrchestrator is None:
             raise RuntimeError(
                 "ExhibitionsOrchestrator not found. Ensure 'backend/scraper/orchestrator.py' exists."
             )
 
+        # Determine detail mode and light cap from args or environment
+        effective_detail_mode = (detail_mode if detail_mode is not None else os.getenv("EX_DETAIL_MODE", "full"))
+        effective_light_cap = int(light_cap if light_cap is not None else os.getenv("EX_DETAIL_LIGHT_CAP", "10"))
+
         orchestrator = ExhibitionsOrchestrator(
             condenser, llm,
             follow_pagination=True,
             detail_concurrency=12,
-            cache=True
+            cache=True,
+            detail_mode=effective_detail_mode,
+            light_cap=effective_light_cap
         )
 
         try:
@@ -113,7 +119,7 @@ class MuseumScheduler:
             except Exception as cleanup_error:
                 logger.error(f"Error closing condenser for {museum.name}: {cleanup_error}")
 
-    async def scrape_outdated_museums(self, max_concurrent: int = 3):
+    async def scrape_outdated_museums(self, max_concurrent: int = 3, detail_mode: Optional[str] = None, light_cap: Optional[int] = None):
         """
         Scrape all museums that need updating
         """
@@ -134,7 +140,7 @@ class MuseumScheduler:
             logger.info(f"Processing batch {i // max_concurrent + 1} ({len(batch)} museums)")
             try:
                 batch_results = await asyncio.gather(
-                    *[self.scrape_museum(m) for m in batch],
+                    *[self.scrape_museum(m, detail_mode=detail_mode, light_cap=light_cap) for m in batch],
                     return_exceptions=True
                 )
             except Exception as batch_error:
@@ -176,7 +182,7 @@ class MuseumScheduler:
             "results": results
         }
 
-    async def scrape_specific_museum(self, museum_name: str):
+    async def scrape_specific_museum(self, museum_name: str, detail_mode: Optional[str] = None, light_cap: Optional[int] = None):
         """Scrape a specific museum by name"""
         museums = self.db.get_museums_to_scrape(days_old=99999)  # all
         museum = next((m for m in museums if m.name == museum_name), None)
@@ -184,7 +190,7 @@ class MuseumScheduler:
             logger.error(f"Museum '{museum_name}' not found in database")
             return {"status": "error", "message": f"Museum not found: {museum_name}"}
         logger.info(f"Found museum: {museum.name} - {museum.city_name}, {museum.country_name}")
-        return await self.scrape_museum(museum)
+        return await self.scrape_museum(museum, detail_mode=detail_mode, light_cap=light_cap)
 
 
 # -------------------- CLI Interface --------------------
@@ -200,6 +206,10 @@ async def main():
     parser.add_argument("--days", type=int, default=90, help="Days before museum needs re-scraping (default: 90)")
     parser.add_argument("--csv", default="backend/data/museums.csv", help="Path to museums CSV file")
     parser.add_argument("--db", default="backend/data/exhibitions.db", help="Path to database file")
+    parser.add_argument("--detail-mode", choices=["full", "light", "off"], default=None,
+                        help="Detail scraping mode; overrides EX_DETAIL_MODE env when provided")
+    parser.add_argument("--light-cap", type=int, default=None,
+                        help="Max details to fetch when in 'light' mode; overrides EX_DETAIL_LIGHT_CAP env")
     args = parser.parse_args()
 
     scheduler = MuseumScheduler(db_path=args.db, csv_path=args.csv, days_until_rescrape=args.days)
@@ -209,19 +219,19 @@ async def main():
         print("Museums synced from CSV")
 
     elif args.action == "update":
-        result = await scheduler.scrape_outdated_museums()
+        result = await scheduler.scrape_outdated_museums(detail_mode=args.detail_mode, light_cap=args.light_cap)
         print(f"Update complete: {result['museums_scraped']} museums updated")
 
     elif args.action == "scrape-all":
         scheduler.days_until_rescrape = 0
-        result = await scheduler.scrape_outdated_museums()
+        result = await scheduler.scrape_outdated_museums(detail_mode=args.detail_mode, light_cap=args.light_cap)
         print(f"Full scrape complete: {result['museums_scraped']} museums scraped")
 
     elif args.action == "scrape-museum":
         if not args.museum:
             print("ERROR: --museum name required for scrape-museum action")
             return
-        result = await scheduler.scrape_specific_museum(args.museum)
+        result = await scheduler.scrape_specific_museum(args.museum, detail_mode=args.detail_mode, light_cap=args.light_cap)
         if isinstance(result, dict) and result.get("status") == "success":
             print(f"✓ {args.museum}: {result['exhibitions_count']} exhibitions found")
         else:

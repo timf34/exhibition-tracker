@@ -10,12 +10,15 @@ from backend.scraper.utils import normalize_title_key
 
 class ExhibitionsOrchestrator:
     def __init__(self, condenser: PageCondenser, llm: LLMExtractor,
-                 follow_pagination=True, detail_concurrency=10, cache=True):
+                 follow_pagination=True, detail_concurrency=10, cache=True,
+                 detail_mode: str = "full", light_cap: int = 10):
         self.c = condenser
         self.llm = llm
         self.follow_pagination = follow_pagination
         self.semaphore = asyncio.Semaphore(detail_concurrency)
         self.cache = cache
+        self.detail_mode = detail_mode  # "full" | "light" | "off"
+        self.light_cap = light_cap
 
     async def _get_listing_bundle(self, museum_url: str) -> Dict[str, Any]:
         print(f"[ORCHESTRATOR] Getting listing bundle for: {museum_url}")
@@ -134,38 +137,79 @@ class ExhibitionsOrchestrator:
         t_llm_listing = (time.perf_counter() - t0) * 1000
         print(f"[MUSEUM] LLM listing extraction completed in {t_llm_listing:.1f}ms")
 
-        # Dedup by href - DON'T filter aggressively (keep v1 approach)
+        # Dedup by href first
         print(f"[MUSEUM] Step 3: Deduplicating by href")
         seen = set()
-        todo = []
+        dedup_items = []
         for it in items:
             href = it.href
-            if href in seen: 
+            if href in seen:
                 print(f"[MUSEUM] Duplicate href skipped: {href}")
                 continue
             seen.add(href)
-            todo.append(it)
-        print(f"[MUSEUM] After dedup: {len(todo)} unique exhibitions to process")
+            dedup_items.append(it)
+        print(f"[MUSEUM] After dedup: {len(dedup_items)} unique listings")
 
-        # Fetch details concurrently with parallel LLM
-        print(f"[MUSEUM] Step 4: Fetching details concurrently (max {self.semaphore._value} concurrent)")
+        # Decide which items need details based on detail_mode
+        print(f"[MUSEUM] Step 4: Selecting items for detail fetch (mode={self.detail_mode})")
+        if self.detail_mode == "off":
+            todo = []
+        elif self.detail_mode == "light":
+            candidates = [it for it in dedup_items if not it.date_text or len(it.title.split()) <= 2]
+            todo = candidates[: self.light_cap]
+        else:
+            todo = dedup_items
+        print(f"[MUSEUM] Detail fetch candidates: {len(todo)} (max concurrency {self.semaphore._value})")
+
+        # Build base records from listing for all deduplicated items
+        base_records: List[Exhibition] = []
+        for it in dedup_items:
+            base_records.append(Exhibition(
+                title=it.title,
+                url=it.href,
+                start_date=it.date_text,
+                end_date=None,
+                details=None
+            ))
+
+        # Only fetch/LLM for selected todo
+        print(f"[MUSEUM] Step 5: Fetching details for selected items")
         per_page_timings: Dict[str, Any] = {}
-        coros = [self._fetch_detail_and_extract(museum_name, it.href, per_page_timings) for it in todo]
-        
-        t_details_start = time.perf_counter()
-        results = await asyncio.gather(*coros, return_exceptions=True)
-        clean = []
-        for r in results:
-            if isinstance(r, Exception):
-                print(f"[MUSEUM] Detail task error: {r}")
-            elif r:
-                clean.append(r)
-        results = clean
-        t_details = (time.perf_counter() - t_details_start) * 1000
-        print(f"[MUSEUM] All detail fetching completed in {t_details:.1f}ms")
+        detail_results: List[Exhibition] = []
+        t_details = 0.0
+        if self.detail_mode != "off" and todo:
+            coros = [self._fetch_detail_and_extract(museum_name, it.href, per_page_timings) for it in todo]
+            t_details_start = time.perf_counter()
+            fetched = await asyncio.gather(*coros, return_exceptions=True)
+            t_details = (time.perf_counter() - t_details_start) * 1000
+            for r in fetched:
+                if isinstance(r, Exception):
+                    print(f"[MUSEUM] Detail task error: {r}")
+                elif isinstance(r, Exhibition):
+                    detail_results.append(r)
+        print(f"[MUSEUM] Detail fetching completed in {t_details:.1f}ms for {len(detail_results)} items")
+
+        # Merge detail fields back over base, preferring detail values
+        by_url: Dict[str, Exhibition] = {ex.url: ex for ex in base_records}
+        for ex in detail_results:
+            base = by_url.get(ex.url)
+            if base:
+                if ex.main_artist:
+                    base.main_artist = ex.main_artist
+                if ex.other_artists:
+                    base.other_artists = ex.other_artists
+                if ex.start_date:
+                    base.start_date = ex.start_date
+                if ex.end_date:
+                    base.end_date = ex.end_date
+                if ex.details:
+                    base.details = ex.details
+            else:
+                by_url[ex.url] = ex
+        results = list(by_url.values())
 
         # Dedup by normalized title & fill museum
-        print(f"[MUSEUM] Step 5: Final deduplication by normalized title")
+        print(f"[MUSEUM] Step 6: Final deduplication by normalized title")
         uniq = []
         titles_seen = set()
         skipped_count = 0
@@ -189,8 +233,8 @@ class ExhibitionsOrchestrator:
         overall_ms = (time.perf_counter() - overall_start) * 1000
         
         # Count successful vs failed detail fetches
-        scraped_count = len([x for x in results if x])
-        failed_count = len(todo) - scraped_count
+        scraped_count = len(detail_results)
+        failed_count = max(0, len(todo) - scraped_count)
         
         print(f"\n[MUSEUM] ========== Summary for {museum_name} ==========\n")
         print(f"[MUSEUM] Total processing time: {overall_ms:.1f}ms")
@@ -198,7 +242,8 @@ class ExhibitionsOrchestrator:
         print(f"[MUSEUM] Listing LLM: {t_llm_listing:.1f}ms")
         print(f"[MUSEUM] Detail fetching: {t_details:.1f}ms")
         print(f"[MUSEUM] Exhibition counts:")
-        print(f"[MUSEUM]   - Candidates found: {len(todo)}")
+        print(f"[MUSEUM]   - Listings after dedup: {len(dedup_items)}")
+        print(f"[MUSEUM]   - Detail candidates: {len(todo)}")
         print(f"[MUSEUM]   - Successfully scraped: {scraped_count}")
         print(f"[MUSEUM]   - Failed to scrape: {failed_count}")
         print(f"[MUSEUM]   - Final unique: {len(uniq)}")
@@ -208,7 +253,8 @@ class ExhibitionsOrchestrator:
             "museum": museum_name,
             "listing_url": listing_url,
             "counts": {
-                "todo": len(todo),
+                "listings": len(dedup_items),
+                "detail_candidates": len(todo),
                 "scraped": scraped_count,
                 "failed": failed_count,
                 "unique": len(uniq)

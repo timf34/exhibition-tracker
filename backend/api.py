@@ -118,7 +118,12 @@ def get_museums() -> List[Dict]:
         raise HTTPException(status_code=500, detail=str(e))
         
 @app.post("/api/scrape/museum/{museum_name}")
-async def scrape_museum(museum_name: str, background_tasks: BackgroundTasks):
+async def scrape_museum(
+    museum_name: str,
+    background_tasks: BackgroundTasks,
+    detail_mode: Optional[str] = Query(None, description="'full'|'light'|'off' overrides EX_DETAIL_MODE"),
+    light_cap: Optional[int] = Query(None, description="Max details to fetch in 'light' mode")
+):
     """
     Trigger scraping for a specific museum
     
@@ -128,7 +133,9 @@ async def scrape_museum(museum_name: str, background_tasks: BackgroundTasks):
         # Add to background tasks
         background_tasks.add_task(
             scheduler.scrape_specific_museum,
-            museum_name
+            museum_name,
+            detail_mode,
+            light_cap
         )
         
         return {
@@ -141,7 +148,11 @@ async def scrape_museum(museum_name: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/scrape/outdated")
-async def scrape_outdated(background_tasks: BackgroundTasks):
+async def scrape_outdated(
+    background_tasks: BackgroundTasks,
+    detail_mode: Optional[str] = Query(None, description="'full'|'light'|'off' overrides EX_DETAIL_MODE"),
+    light_cap: Optional[int] = Query(None, description="Max details to fetch in 'light' mode")
+):
     """
     Trigger scraping for all outdated museums
     
@@ -150,7 +161,10 @@ async def scrape_outdated(background_tasks: BackgroundTasks):
     try:
         # Add to background tasks
         background_tasks.add_task(
-            scheduler.scrape_outdated_museums
+            scheduler.scrape_outdated_museums,
+            3,
+            detail_mode,
+            light_cap
         )
         
         return {
