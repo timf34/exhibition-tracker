@@ -72,44 +72,9 @@ class DatabaseManager:
         return ' '.join(name.split())
     
     def parse_date_to_iso(self, date_text: str) -> Optional[str]:
-        """Convert various date formats to ISO YYYY-MM-DD"""
         if not date_text:
             return None
-        
-        try:
-            # Try using dateutil parser
-            from dateutil import parser as dateparse
-            parsed = dateparse.parse(date_text, fuzzy=True)
-            return parsed.strftime('%Y-%m-%d')
-        except:
-            # Manual patterns for common formats
-            # "2 August 2025" or "2nd August 2025"
-            match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(\d{4})', date_text)
-            if match:
-                day, month_name, year = match.groups()
-                month_map = {
-                    'january': '01', 'february': '02', 'march': '03', 'april': '04',
-                    'may': '05', 'june': '06', 'july': '07', 'august': '08',
-                    'september': '09', 'october': '10', 'november': '11', 'december': '12'
-                }
-                month_num = month_map.get(month_name.lower())
-                if month_num:
-                    return f"{year}-{month_num}-{day.zfill(2)}"
-            
-            # "August 2025" format
-            match = re.search(r'([A-Za-z]+)\s+(\d{4})', date_text)
-            if match:
-                month_name, year = match.groups()
-                month_map = {
-                    'january': '01', 'february': '02', 'march': '03', 'april': '04',
-                    'may': '05', 'june': '06', 'july': '07', 'august': '08',
-                    'september': '09', 'october': '10', 'november': '11', 'december': '12'
-                }
-                month_num = month_map.get(month_name.lower())
-                if month_num:
-                    return f"{year}-{month_num}-01"
-            
-            return None
+        return self._parse_single_date(date_text)
     
     def init_database(self):
         """Create normalized database schema"""
@@ -324,9 +289,51 @@ class DatabaseManager:
             saved_count = 0
             for ex in exhibitions:
                 try:
-                    # Parse dates
-                    start_iso = self.parse_date_to_iso(ex.start_date)
-                    end_iso = self.parse_date_to_iso(ex.end_date)
+                    # 1) If start/end come as a single range in start_date or end_date, split them.
+                    #    We prefer any explicit end date returned by the LLM, but we ALWAYS
+                    #    attempt to split ranges so we fill both sides.
+                    s_text = ex.start_date
+                    e_text = ex.end_date
+
+                    # If start has a range or looks like it, split that
+                    if s_text and (re.search(r'\bto\b', s_text, re.IGNORECASE) or any(x in s_text for x in ['–','—',' - '])):
+                        s_iso_split, e_iso_split, s_left, e_right = self.parse_date_range_text(s_text)
+                        if s_iso_split:
+                            ex.start_date = s_left or ex.start_date
+                        if e_iso_split:
+                            ex.end_date = e_right or ex.end_date
+
+                    # If end contains a range (rare), also split
+                    if e_text and (re.search(r'\bto\b', e_text, re.IGNORECASE) or any(x in e_text for x in ['–','—',' - '])):
+                        s_iso_split2, e_iso_split2, s_left2, e_right2 = self.parse_date_range_text(e_text)
+                        if s_iso_split2 and not ex.start_date:
+                            ex.start_date = s_left2
+                        if e_iso_split2 and not ex.end_date:
+                            ex.end_date = e_right2
+
+                    # 2) If we still only have a single "range-like" string in start (and no end),
+                    #    run the splitter once more to fill both.
+                    if ex.start_date and not ex.end_date:
+                        s_iso_try, e_iso_try, s_left_try, e_right_try = self.parse_date_range_text(ex.start_date)
+                        if e_iso_try:
+                            ex.end_date = e_right_try
+
+                    # 3) Finally, produce ISO values for persistence
+                    start_iso = None
+                    end_iso = None
+
+                    # If both present as separate texts, parse separately
+                    if ex.start_date:
+                        start_iso = self.parse_date_to_iso(ex.start_date)
+                    if ex.end_date:
+                        end_iso = self.parse_date_to_iso(ex.end_date)
+
+                    # If still missing and we have a range-like original string anywhere, try one last time
+                    if (start_iso is None or (end_iso is None and ex.end_date is None)) and (ex.start_date or ex.end_date):
+                        s_range = ex.start_date or ex.end_date
+                        s_iso_r, e_iso_r, s_left_r, e_right_r = self.parse_date_range_text(s_range)
+                        start_iso = start_iso or s_iso_r
+                        end_iso   = end_iso   or e_iso_r
                     
                     # Insert exhibition
                     cursor = conn.execute("""
@@ -478,7 +485,7 @@ class DatabaseManager:
                     m.name as museum_name,
                     c.name as museum_city,
                     co.name as museum_country,
-                    GROUP_CONCAT(DISTINCT a.name, ', ') as artists
+                    GROUP_CONCAT(DISTINCT a.name) as artists
                 FROM exhibitions e
                 JOIN museums m ON e.museum_id = m.id
                 JOIN cities c ON m.city_id = c.id
@@ -582,7 +589,7 @@ class DatabaseManager:
                         m.name as museum_name,
                         c.name as museum_city,
                         co.name as museum_country,
-                        GROUP_CONCAT(DISTINCT a.name, ', ') as main_artist
+                        GROUP_CONCAT(DISTINCT a.name) as main_artist
                     FROM exhibitions e
                     JOIN museums m ON e.museum_id = m.id
                     JOIN cities c ON m.city_id = c.id
@@ -660,3 +667,136 @@ class DatabaseManager:
                     count += 1
                         
         print(f"[DB] Imported {count} museums from {csv_path}")
+    
+    def _norm_dash(self, s: str) -> str:
+        return (s or "").replace("–", "-").replace("—", "-").strip()
+
+    def _month_num(self, name: str) -> str:
+        month_map = {
+            'january': '01','february': '02','march': '03','april': '04','may': '05','june': '06',
+            'july': '07','august': '08','september': '09','october': '10','november': '11','december': '12'
+        }
+        return month_map.get((name or "").lower())
+
+    def _parse_single_date(self, s: str, fallback_year: str = None, fallback_month: str = None) -> Optional[str]:
+        """
+        Parse a single date fragment into ISO (YYYY-MM-DD).
+        Fills missing year/month from fallbacks when present.
+        Tries multiple strategies; returns None if unknown.
+        """
+        if not s: return None
+        s = s.strip()
+
+        # If we have fallback parts, prepend/append to help parser
+        candidate = s
+        # If there's a day + month but no year, append year
+        if fallback_year and re.search(r"\b(\d{1,2})\b", s) and re.search(r"[A-Za-z]+", s) and not re.search(r"\b\d{4}\b", s):
+            candidate = f"{s} {fallback_year}"
+        # If there's only a day and fallback month/year available (e.g. "1" with "January 2026")
+        if fallback_month and fallback_year and re.fullmatch(r"\d{1,2}", s):
+            candidate = f"{s} {fallback_month} {fallback_year}"
+
+        # Try dateutil (prefer day-first for dotted/slashed)
+        try:
+            from dateutil import parser as dateparse
+            # dayfirst=True improves "05.09.2025", "16/04/2026" etc.
+            dt = dateparse.parse(candidate, fuzzy=True, dayfirst=True)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+        # Manual: "2 August 2025" / "2nd August 2025"
+        m = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(\d{4})', candidate)
+        if m:
+            d, mon, y = m.groups()
+            mon_num = self._month_num(mon)
+            if mon_num: return f"{y}-{mon_num}-{d.zfill(2)}"
+
+        # Manual: "August 2025" (assume first of month)
+        m = re.search(r'([A-Za-z]+)\s+(\d{4})', candidate)
+        if m:
+            mon, y = m.groups()
+            mon_num = self._month_num(mon)
+            if mon_num: return f"{y}-{mon_num}-01"
+
+        # Manual: "05.09.2025" or "05/09/2025" or "05-09-2025"
+        m = re.search(r'\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b', candidate)
+        if m:
+            d, mon, y = m.groups()
+            if len(y) == 2:
+                y = "20" + y  # assume 20xx
+            return f"{y}-{str(mon).zfill(2)}-{str(d).zfill(2)}"
+
+        return None
+
+    def parse_date_range_text(self, date_text: str) -> (Optional[str], Optional[str], Optional[str], Optional[str]):
+        """
+        Given a free-form date_text that may contain a range, return:
+        (start_iso, end_iso, start_text, end_text)
+
+        Handles:
+          - "2 August 2025 - 25 January 2026"
+          - "1-31 January 2026" (same month/year)
+          - "From 05.09.2025 to 12.10.2025"
+          - "27 June - 8 November 2026" (left inherits year)
+          - "16 April – 19 July 2026"  (left inherits year)
+          - "Opens 26 June 2025" (start only)
+        """
+        if not date_text:
+            return None, None, None, None
+
+        s = self._norm_dash(date_text)
+        s_low = s.lower()
+
+        # Remove fluff words but keep structure
+        s_clean = re.sub(r'\b(opens|opening|from)\b', '', s_low, flags=re.IGNORECASE).strip()
+        s_clean = re.sub(r'\s{2,}', ' ', s_clean)
+
+        # If we see a clear "to"
+        if re.search(r'\bto\b', s_clean):
+            parts = re.split(r'\bto\b', s_clean, maxsplit=1, flags=re.IGNORECASE)
+        else:
+            # Split on first dash used as range marker
+            parts = re.split(r'\s-\s| - |–|-', s, maxsplit=1)
+
+        if len(parts) == 2:
+            left, right = parts[0].strip(), parts[1].strip()
+
+            # Try to extract fallback month/year from right part
+            # e.g., right="8 November 2026" -> month="November", year="2026"
+            right_year = None
+            right_month_name = None
+            m = re.search(r'([A-Za-z]+)\s+\d{1,2}\s*,?\s*(\d{4})', right)
+            if m:
+                right_month_name, right_year = m.groups()
+            else:
+                m = re.search(r'(\d{1,2})\s+([A-Za-z]+)\s*(\d{4})', right)
+                if m:
+                    _, right_month_name, right_year = m.groups()
+                else:
+                    # dotted numeric right may contain year
+                    m = re.search(r'\b\d{1,2}[./-]\d{1,2}[./-](\d{2,4})\b', right)
+                    if m:
+                        y = m.group(1)
+                        right_year = "20" + y if len(y) == 2 else y
+
+            right_month_num = self._month_num(right_month_name) if right_month_name else None
+
+            start_iso = self._parse_single_date(left, fallback_year=right_year, fallback_month=right_month_name)
+            end_iso = self._parse_single_date(right)
+
+            # Special compact pattern like "1-31 January 2026"
+            if not end_iso and re.search(r'^\d{1,2}\s*-\s*\d{1,2}\s+[A-Za-z]+\s+\d{4}$', s):
+                m2 = re.search(r'^(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$', s)
+                if m2:
+                    d1, d2, mon, y = m2.groups()
+                    mon_num = self._month_num(mon)
+                    if mon_num:
+                        start_iso = f"{y}-{mon_num}-{str(d1).zfill(2)}"
+                        end_iso   = f"{y}-{mon_num}-{str(d2).zfill(2)}"
+
+            return start_iso, end_iso, left, right
+
+        # Not a range → try single start (e.g., "Opens 26 June 2025")
+        start_iso = self._parse_single_date(s_clean)
+        return start_iso, None, s, None
