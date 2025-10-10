@@ -41,7 +41,7 @@ except ImportError:
     SELENIUM_AVAILABLE = False
 
 # ---------------- CONFIG ----------------
-INPUT_FILE = "test_museums.csv"
+INPUT_FILE = "full_museums.csv"
 OUTPUT_FILE = "museums_cleaned.csv"
 FAILED_FILE = "museums_failed.csv"
 MANUAL_CHECK_FILE = "museums_manual_check.csv"
@@ -281,6 +281,8 @@ def process_rows(rows: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List
     requests_batch, selenium_batch = [], []
     for row in rows:
         row = dict(row)
+        # Remove any None keys (from malformed CSV rows with extra columns)
+        row = {k: v for k, v in row.items() if k is not None}
         raw_url = row.get("url", "").strip()
         clean = sanitize_url(raw_url)
         row["url"] = clean
@@ -336,7 +338,7 @@ def main():
     with open(INPUT_FILE, newline="", encoding="utf-8") as infile:
         reader = csv.DictReader(infile)
         rows = list(reader)
-        fieldnames = list(reader.fieldnames or []) + ["status", "http_status", "final_url"]
+        fieldnames = [f for f in (reader.fieldnames or []) if f is not None] + ["status", "http_status", "final_url"]
 
     kept, dropped, manual = process_rows(rows)
 
